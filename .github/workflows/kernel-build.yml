@@ -1,0 +1,81 @@
+name: Build Kernel with KernelSU-Next
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE:
+        description: 'Device config name (a50, a50s, etc)'
+        required: true
+        default: 'a50'
+        type: choice
+        options:
+          - 'a50'
+          - 'a50s'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v3
+        with:
+          path: android_kernel_samsung_exynos9610_mint
+          fetch-depth: 0
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl
+
+      - name: Clone toolchains
+        run: |
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 -b android12-release clang
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1 aarch64-linux-android-4.9
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 --depth=1 arm-linux-androideabi-4.9
+
+      - name: Apply KernelSU-Next patch
+        working-directory: android_kernel_samsung_exynos9610_mint
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
+
+      - name: Build Kernel
+        working-directory: android_kernel_samsung_exynos9610_mint
+        run: |
+          DEVICE=${{ github.event.inputs.DEVICE }}
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export ANDROID_MAJOR_VERSION=q
+          export CLANG_PATH=$(pwd)/../clang/clang-r428724
+          export PATH=${CLANG_PATH}/bin:${PATH}
+          export CROSS_COMPILE=$(pwd)/../aarch64-linux-android-4.9/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$(pwd)/../arm-linux-androideabi-4.9/bin/arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make clean && make mrproper
+          export DEFCONFIG=exynos9610-${DEVICE}_defconfig
+          echo "Using defconfig: $DEFCONFIG"
+          make $DEFCONFIG
+          make -j$(nproc --all) CC=clang HOSTCC=clang
+
+      - name: Create AnyKernel3 package
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cd AnyKernel3
+          # Configure AnyKernel3 for your device
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh # If your device is A/B partition style
+          sed -i 's/ramdisk_compression=auto/ramdisk_compression=lz4/g' anykernel.sh
+          # Copy kernel image to AnyKernel3 directory
+          cp ../android_kernel_samsung_exynos9610_mint/arch/arm64/boot/Image ./
+          # If you have dtb or dtbo files, copy them too:
+          # cp ../android_kernel_samsung_exynos9610_mint/arch/arm64/boot/dtb.img ./
+          # cp ../android_kernel_samsung_exynos9610_mint/arch/arm64/boot/dtbo.img ./
+          # Pack AnyKernel3 zip
+          zip -r9 ../KernelSU-Next-${{ github.event.inputs.DEVICE }}-$(date +%Y%m%d).zip * -x .git README.md *placeholder
+
+      - name: Upload Kernel Build
+        uses: actions/upload-artifact@v3
+        with:
+          name: KernelSU-Next-${{ github.event.inputs.DEVICE }}-Kernel
+          path: |
+            android_kernel_samsung_exynos9610_mint/arch/arm64/boot/Image
+            KernelSU-Next-${{ github.event.inputs.DEVICE }}-*.zip
